@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+
+# Outputs and generated artifacts
+*.mp4
+output.mp4
+summary.json
+annotation_candidates.csv
+feature_sequences.json
+model.pt
+rep*_frame*.png
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
