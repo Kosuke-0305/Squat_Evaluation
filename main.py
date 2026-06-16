@@ -1,4 +1,4 @@
-"""スクワットフォーム崩れ検出デモのエントリポイント。"""
+"""スクワット有効試技判定システムのエントリポイント。"""
 
 import argparse
 import csv
@@ -19,7 +19,7 @@ from visualizer import draw_overlay
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="スクワットフォーム崩れ検出デモ")
+    parser = argparse.ArgumentParser(description="スクワット有効試技判定システム")
     parser.add_argument("--input",              type=str,   default=None,  help="動画ファイルパス（省略時はWebカメラ）")
     parser.add_argument("--save",               action="store_true",       help="処理済み動画を output.mp4 に保存")
     parser.add_argument("--save-frames",        action="store_true",       help="最深点フレームを PNG で保存")
@@ -63,8 +63,10 @@ def _compute_max_lr_diff(frame_results: list, start: int, end: int) -> float:
 
 
 def _format_error_labels(form_flags: dict) -> str:
-    labels = [k for k in ("knee_forward", "trunk_lean", "back_round") if form_flags[k]]
-    return "_".join(labels) if labels else "good_form"
+    from classifier import INVALID_MAJORITY
+    score_keys = ("depth_score", "lockout_score", "bar_descent_score", "bounce_score", "foot_shift_score")
+    labels = [k for k in score_keys if (form_flags.get(k) or 0) >= INVALID_MAJORITY]
+    return "_".join(labels) if labels else "valid"
 
 
 def _rep_features_seq(rep: dict, frame_results: list, baseline: dict | None) -> list:
@@ -93,6 +95,7 @@ def build_summary(reps: list, frame_results: list, squat_style: str | None, clas
         features_seq = _rep_features_seq(rep, frame_results, baseline)
         form_flags   = classifier.classify_sequence(features_seq)
 
+        is_lstm = classifier.__class__.__name__ == "LSTMClassifier"
         rep_list.append({
             "rep_id":           n,
             "start_frame":      start_frame,
@@ -104,22 +107,28 @@ def build_summary(reps: list, frame_results: list, squat_style: str | None, clas
             "start_mmss":       rep.get("start_mmss"),
             "end_mmss":         rep.get("end_mmss"),
             "deepest_mmss":     rep.get("deepest_mmss"),
-            "min_angle_repr": round(rep["min_angle_repr"], 1),
-            "max_lr_diff":   round(_compute_max_lr_diff(frame_results, start_frame, rep["end_frame"]), 1),
+            "min_angle_repr":   round(rep["min_angle_repr"], 1),
+            "max_lr_diff":      round(_compute_max_lr_diff(frame_results, start_frame, rep["end_frame"]), 1),
             "baseline": {
-                "knee_foot_diff":    round(baseline["knee_foot_diff"],    3) if baseline else None,
-                "trunk_angle":       round(baseline["trunk_angle"],       3) if baseline else None,
-                "shoulder_hip_dist": round(baseline["shoulder_hip_dist"], 3) if baseline else None,
+                "left_knee_angle":  round(baseline["left_knee_angle"],  1) if baseline else None,
+                "right_knee_angle": round(baseline["right_knee_angle"], 1) if baseline else None,
+                "left_ankle_x":     round(baseline["left_ankle_x"],     4) if baseline else None,
+                "right_ankle_x":    round(baseline["right_ankle_x"],    4) if baseline else None,
+                "left_shoulder_y":  round(baseline["left_shoulder_y"],  4) if baseline else None,
+                "right_shoulder_y": round(baseline["right_shoulder_y"], 4) if baseline else None,
             },
             "features_at_deepest": {
-                "knee_forward_ratio": round(features_at_deepest["knee_forward_ratio"], 3),
-                "trunk_lean_delta":   round(features_at_deepest["trunk_lean_delta"],   3),
-                "back_round_ratio":   round(features_at_deepest["back_round_ratio"],   3),
+                k: round(features_at_deepest[k], 3) for k in features_at_deepest
             },
             "form_labels": {
-                "knee_forward": int(form_flags["knee_forward"]),
-                "trunk_lean":   int(form_flags["trunk_lean"]),
-                "back_round":   int(form_flags["back_round"]),
+                "valid":             form_flags["valid"] if is_lstm else None,
+                "unanimous":         None,  # 人間がアノテーション CSV で記入するため null
+                # 失敗スコア: ルールベースでは 0（問題なし）か 3（全員抵触）の二択
+                "depth_score":       form_flags.get("depth_score",       0),
+                "lockout_score":     form_flags.get("lockout_score",     0),
+                "bar_descent_score": form_flags.get("bar_descent_score", 0),
+                "bounce_score":      form_flags.get("bounce_score",      0),
+                "foot_shift_score":  form_flags.get("foot_shift_score",  0),
             },
         })
     return {
@@ -136,13 +145,17 @@ def export_annotation_csv(
     classifier,
 ) -> None:
     """アノテーション候補 CSV を出力する。"""
+    from classifier import classify_attempt as _rule_attempt, INVALID_MAJORITY
     fieldnames = [
         "video_id", "rep_id", "squat_style",
+        "valid", "unanimous",
+        "depth_score", "lockout_score", "bar_descent_score",
+        "bounce_score", "foot_shift_score",
         "start_frame", "end_frame", "deepest_frame",
         "start_time_sec", "end_time_sec", "deepest_time_sec",
         "start_mmss", "end_mmss", "deepest_mmss",
-        "knee_forward_flag", "trunk_lean_flag", "back_round_flag", "needs_review",
-        "knee_forward_ratio_max", "trunk_lean_delta_max", "back_round_ratio_min",
+        "min_angle_repr", "max_lr_diff",
+        "auto_depth_fail", "auto_lockout_fail",
     ]
     with open("annotation_candidates.csv", "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -154,34 +167,39 @@ def export_annotation_csv(
 
             features_seq = _rep_features_seq(rep, frame_results, baseline)
 
-            # フォーム判定はシーケンス単位で実施
-            form_flags = classifier.classify_sequence(features_seq)
-
-            # スコア集計はフレーム単位で行う（CSV の ratio 列はルールベース側の連続値）
-            kf_ratios = [f["knee_forward_ratio"] for f in features_seq]
-            tl_deltas = [f["trunk_lean_delta"]   for f in features_seq]
-            br_ratios = [f["back_round_ratio"]   for f in features_seq]
+            # ルールベースで自動判定
+            auto_flags = _rule_attempt(features_seq)
 
             writer.writerow({
-                "video_id":               video_id,
-                "rep_id":                 n,
-                "squat_style":            squat_style or "",
-                "start_frame":            start_frame,
-                "end_frame":              rep["end_frame"],
-                "deepest_frame":          rep["valley_frame"],
-                "start_time_sec":         rep.get("start_time_sec", ""),
-                "end_time_sec":           rep.get("end_time_sec", ""),
-                "deepest_time_sec":       rep.get("deepest_time_sec", ""),
-                "start_mmss":             rep.get("start_mmss", ""),
-                "end_mmss":               rep.get("end_mmss", ""),
-                "deepest_mmss":           rep.get("deepest_mmss", ""),
-                "knee_forward_flag":      int(form_flags["knee_forward"]),
-                "trunk_lean_flag":        int(form_flags["trunk_lean"]),
-                "back_round_flag":        int(form_flags["back_round"]),
-                "needs_review":           int(form_flags["any_error"]),
-                "knee_forward_ratio_max": round(max(kf_ratios) if kf_ratios else 0.0, 3),
-                "trunk_lean_delta_max":   round(max(tl_deltas)  if tl_deltas  else 0.0, 3),
-                "back_round_ratio_min":   round(min(br_ratios)  if br_ratios  else 0.0, 3),
+                "video_id":         video_id,
+                "rep_id":           n,
+                "squat_style":      squat_style or "",
+                # 人間がアノテーションする列（初期値は空欄）
+                "valid":            "",
+                "unanimous":        "",
+                # スコア列: ルールベース結果（0 または 3）を初期値として記入
+                # 人間がレビュー時に 1 や 2 に修正することで際どい試技を表現できる
+                "depth_score":       auto_flags.get("depth_score",       0),
+                "lockout_score":     auto_flags.get("lockout_score",     0),
+                "bar_descent_score": auto_flags.get("bar_descent_score", 0),
+                "bounce_score":      auto_flags.get("bounce_score",      0),
+                "foot_shift_score":  auto_flags.get("foot_shift_score",  0),
+                # 時間・フレーム情報
+                "start_frame":      start_frame,
+                "end_frame":        rep["end_frame"],
+                "deepest_frame":    rep["valley_frame"],
+                "start_time_sec":   rep.get("start_time_sec", ""),
+                "end_time_sec":     rep.get("end_time_sec", ""),
+                "deepest_time_sec": rep.get("deepest_time_sec", ""),
+                "start_mmss":       rep.get("start_mmss", ""),
+                "end_mmss":         rep.get("end_mmss", ""),
+                "deepest_mmss":     rep.get("deepest_mmss", ""),
+                # 参考値
+                "min_angle_repr":   round(rep["min_angle_repr"], 1),
+                "max_lr_diff":      round(_compute_max_lr_diff(frame_results, start_frame, rep["end_frame"]), 1),
+                # ルールベース自動判定（ラベリング参考用、0/1 二値）
+                "auto_depth_fail":   int(auto_flags.get("depth_score",   0) >= INVALID_MAJORITY),
+                "auto_lockout_fail": int(auto_flags.get("lockout_score", 0) >= INVALID_MAJORITY),
             })
 
 
@@ -401,6 +419,7 @@ def main() -> None:
             frame, result, form_result, features,
             rep_count=prov_count, rep_total=0,
             current_frame=frame_idx, rep_start=rep_start, rep_end=rep_end,
+            judging=prov_in_squat,
         )
 
         cv2.imshow("Squat Form Demo", frame)
