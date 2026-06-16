@@ -1,53 +1,86 @@
-"""スクワットフォーム分類 LSTM モデル定義。"""
+"""スクワット有効試技判定 LSTM モデル定義。
+
+可変長シーケンスを pack_padded_sequence で処理し、
+valid + 5 失敗要素スコアの 6 出力を返す多出力設計。
+"""
 
 import torch.nn as nn
+from torch.nn.utils.rnn import pack_padded_sequence
 
-# extractor.py の extract_form_features が返す12キーと順序を固定する
+# extract_form_features が返す11キーと順序を固定する
 FEATURE_KEYS = [
-    "knee_forward_ratio",
-    "trunk_lean_delta",
-    "back_round_ratio",
     "left_knee_angle",
     "right_knee_angle",
     "left_hip_angle",
     "right_hip_angle",
-    "left_ankle_angle",
-    "right_ankle_angle",
+    "left_shoulder_y_delta",
+    "right_shoulder_y_delta",
+    "left_ankle_x_delta",
+    "right_ankle_x_delta",
     "lr_knee_diff",
     "left_visibility",
     "right_visibility",
 ]
 
-LABEL_KEYS = ["knee_forward", "trunk_lean", "back_round"]
+# 出力ラベルの順序（インデックス 0 = valid、1〜5 = 失敗要素スコア）
+LABEL_KEYS = [
+    "valid",
+    "depth_score",
+    "lockout_score",
+    "bar_descent_score",
+    "bounce_score",
+    "foot_shift_score",
+]
 
-INPUT_DIM  = len(FEATURE_KEYS)   # 12
-OUTPUT_DIM = len(LABEL_KEYS)     # 3
+INPUT_DIM  = len(FEATURE_KEYS)  # 11
+OUTPUT_DIM = len(LABEL_KEYS)    # 6
 
 
 class SquatLSTM(nn.Module):
-    """スクワットフォーム崩れのマルチラベル LSTM 分類器。
+    """スクワット有効試技判定 LSTM 分類器。
 
-    入力: (batch, seq_len, INPUT_DIM) の特徴量シーケンス
-    出力: (batch, OUTPUT_DIM) の生ロジット（sigmoid 前）
+    入力: (batch, T, input_size) + lengths (batch,) の可変長シーケンス
+    出力: (batch, num_labels) の生ロジット（sigmoid 前）
+
+    可変長対応:
+        forward(x, lengths) を呼ぶと pack_padded_sequence で正確な最終隠れ状態を取得する。
+        lengths=None のときは固定長入力として扱う（後方互換）。
     """
 
-    def __init__(self, hidden_size: int = 64, num_layers: int = 2, dropout: float = 0.3):
+    def __init__(
+        self,
+        input_size: int = INPUT_DIM,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        num_labels: int = OUTPUT_DIM,
+        dropout: float = 0.3,
+    ):
         super().__init__()
         self.lstm = nn.LSTM(
-            INPUT_DIM,
+            input_size,
             hidden_size,
             num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0,
         )
-        self.head = nn.Linear(hidden_size, OUTPUT_DIM)
+        self.head = nn.Linear(hidden_size, num_labels)
 
-    def forward(self, x):
+    def forward(self, x, lengths=None):
         """
         Args:
-            x: (batch, seq_len, INPUT_DIM)
+            x:       (batch, T, input_size) パディング済み（または固定長）シーケンス
+            lengths: (batch,) 各サンプルの実際の長さ（LongTensor）。
+                     None の場合は固定長入力として扱う（後方互換）。
+
         Returns:
-            logits: (batch, OUTPUT_DIM) — BCEWithLogitsLoss に渡す前の生スコア
+            logits: (batch, num_labels) — BCEWithLogitsLoss に渡す前の生スコア
         """
-        out, _ = self.lstm(x)
-        return self.head(out[:, -1, :])  # 最終タイムステップの出力を使用
+        if lengths is not None:
+            packed = pack_padded_sequence(
+                x, lengths.cpu(), batch_first=True, enforce_sorted=False
+            )
+            _, (h_n, _) = self.lstm(packed)
+        else:
+            _, (h_n, _) = self.lstm(x)
+        # h_n: (num_layers, batch, hidden_size) — 最終層の最終タイムステップ隠れ状態
+        return self.head(h_n[-1])  # (batch, num_labels)
