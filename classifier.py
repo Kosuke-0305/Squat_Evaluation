@@ -185,22 +185,7 @@ def classify_attempt_lstm(
         logits = model(x, lengths)                                  # (1, num_labels)
         probs  = torch.sigmoid(logits[0])                          # (num_labels,)
 
-    # valid: LSTM 出力（index 0）
     result["valid"] = bool(probs[0].item() > 0.5)
-
-    # 6 出力モデル: 失敗スコアも LSTM で補完
-    if probs.shape[0] >= 6:
-        _SCORE_KEYS = [
-            "depth_score", "lockout_score", "bar_descent_score",
-            "bounce_score", "foot_shift_score",
-        ]
-        for i, key in enumerate(_SCORE_KEYS):
-            lstm_fail  = probs[i + 1].item() > 0.5
-            rule_score = result.get(key, 0)
-            # ルールが確定失敗(3)なら維持。ルールが0でLSTMが失敗予測なら2（際どい失敗）
-            if rule_score == 0 and lstm_fail:
-                result[key] = 2
-
     return result
 
 
@@ -252,7 +237,7 @@ class LSTMClassifier:
     def __init__(self, model_path: str) -> None:
         import torch
         import numpy as np
-        from model import SquatLSTM, FEATURE_KEYS, INPUT_DIM, OUTPUT_DIM
+        from model import SquatLSTM, FEATURE_KEYS, INPUT_DIM
 
         self._torch        = torch
         self._np           = np
