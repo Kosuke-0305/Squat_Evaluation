@@ -57,10 +57,25 @@ def main():
     skf  = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=args.seed)
     aucs = []
 
+    # aug{tag}_{orig_base} から元の base を取り出すヘルパー
+    _AUG_TAGS = {"augtw80_", "augtw90_", "augtw110_", "augtw120_",
+                 "augns0_", "augns1_", "augflip_"}
+
+    def orig_of(aug_base: str) -> str:
+        for tag in _AUG_TAGS:
+            if aug_base.startswith(tag):
+                return aug_base[len(tag):]
+        return aug_base
+
     for fold, (train_idx, val_idx) in enumerate(skf.split(orig_all, labels), 1):
         train_orig = [orig_all[i] for i in train_idx]
         val_bases  = [orig_all[i] for i in val_idx]
-        train_bases = sorted(train_orig + aug_valid + aug_invalid)
+
+        # val に含まれる元サンプルの拡張データは train から除外（データリーク防止）
+        val_set          = set(val_bases)
+        aug_valid_fold   = [b for b in aug_valid   if orig_of(b) not in val_set]
+        aug_invalid_fold = [b for b in aug_invalid if orig_of(b) not in val_set]
+        train_bases = sorted(train_orig + aug_valid_fold + aug_invalid_fold)
 
         def make_ds(bases):
             seqs  = [os.path.join(args.data_dir, f"seq_{b}.json")  for b in bases]
