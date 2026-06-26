@@ -1,22 +1,36 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
 *.pyo
 *.pyd
 .venv/
 venv/
 ENV/
 
-# Outputs and generated artifacts
+# 拡張データ（augment_data.py で再生成可能）
+training_data/seq_aug*.json
+training_data/anno_aug*.csv
+
+# 中間モデル（最良モデル model_augmented_v3.pt のみ残す）
+model.pt
+model_balanced.pt
+model_binary.pt
+model_binary_v2.pt
+model_augmented.pt
+model_augmented_v2.pt
+
+# 生成物・出力ファイル
 *.mp4
 output.mp4
 summary.json
 annotation_candidates.csv
 feature_sequences.json
-model.pt
 rep*_frame*.png
 
-# OS / editor
+# OS / エディタ
 .DS_Store
 Thumbs.db
 .vscode/
+.idea/
+*.swp

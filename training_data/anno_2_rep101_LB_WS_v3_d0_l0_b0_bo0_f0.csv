@@ -1,0 +1,2 @@
+video_id,rep_id,squat_style,valid,unanimous,depth_score,lockout_score,bar_descent_score,bounce_score,foot_shift_score,start_frame,end_frame,deepest_frame,start_time_sec,end_time_sec,deepest_time_sec,start_mmss,end_mmss,deepest_mmss,min_angle_repr,max_lr_diff,auto_depth_fail,auto_lockout_fail
+2,101,LB_WS,1,1,0,0,0,0,0,0,480,297,0.0,8.0,4.95,0:00.00,0:08.00,0:04.95,82.5,21.5,0,0
