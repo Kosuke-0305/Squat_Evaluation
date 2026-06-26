@@ -280,6 +280,7 @@ def main():
                 "num_layers":       args.num_layers,
                 "num_labels":       1,
                 "max_seq_len":      None,
+                "val_bases":        val_bases,  # 検証セット再現用
             }, args.output)
             saved = f"  -> saved {args.output}"
 
